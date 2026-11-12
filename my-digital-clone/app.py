@@ -9,7 +9,7 @@ os.chdir(BASE_DIR)
 
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
-from huggingface_hub import InferenceClient
+from groq import Groq
 
 # --- CONFIGURATION ---
 YOUR_NAME = "Saher Nazir"
@@ -89,7 +89,7 @@ def retrieve(query, mode="Hybrid", top_k=TOP_K):
 
     return results
 
-# --- 4. GENERATION ---
+# --- 4. GENERATION (GROQ) ---
 def generate_answer(question, retrieved):
     context_blocks = []
     for c, _ in retrieved:
@@ -115,38 +115,26 @@ CONTEXT:
 QUESTION:
 {question}"""
 
-    hf_token = ""
+    groq_api_key = ""
     try:
-        hf_token = st.secrets["HF_TOKEN"]
+        groq_api_key = st.secrets["GROQ_API_KEY"]
     except Exception:
-        hf_token = os.environ.get("HF_TOKEN", "")
+        groq_api_key = os.environ.get("GROQ_API_KEY", "")
 
-    if not hf_token:
-        return "⚠️ Error: HF_TOKEN secret is missing. Please add it in Streamlit App Settings -> Secrets."
+    if not groq_api_key:
+        return "⚠️ Error: GROQ_API_KEY secret is missing. Please add it in Streamlit App Settings -> Secrets."
 
-    candidate_models = [
-        "Qwen/Qwen2.5-7B-Instruct:novita",
-        "Qwen/Qwen2.5-7B-Instruct:together",
-        "meta-llama/Llama-3.2-3B-Instruct:novita",
-        "meta-llama/Llama-3.1-8B-Instruct:novita",
-        "Qwen/Qwen2.5-72B-Instruct:fastest"
-    ]
-
-    last_error = ""
-    for model_id in candidate_models:
-        try:
-            client = InferenceClient(model=model_id, token=hf_token)
-            response = client.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=350,
-                temperature=0.3
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    return f"API Error: {last_error}"
+    try:
+        client = Groq(api_key=groq_api_key)
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=350,
+            temperature=0.3
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"API Error: {str(e)}"
 
 # --- 5. STREAMLIT UI ---
 st.title(f"🤖 Chat with {YOUR_NAME}'s Digital Clone")
