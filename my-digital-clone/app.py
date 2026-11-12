@@ -3,8 +3,10 @@ import glob
 import re
 import numpy as np
 import streamlit as st
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
+
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from huggingface_hub import InferenceClient
@@ -26,7 +28,7 @@ def load_and_chunk(data_dir="data"):
         if not filepath.endswith((".txt", ".md")):
             continue
         filename = os.path.basename(filepath)
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             words = f.read().split()
         
         step = CHUNK_SIZE - OVERLAP
@@ -94,7 +96,7 @@ def generate_answer(question, retrieved):
         src = c["source"]
         cid = c["chunk_id"]
         txt = c["text"]
-        context_blocks.append(f"\n{txt}")
+        context_blocks.append(f"[{src} | {cid}]\n{txt}")
 
     context_str = "\n\n".join(context_blocks)
 
@@ -124,7 +126,7 @@ QUESTION:
         return "⚠️ Error: HF_TOKEN secret is missing. Please add it in Streamlit App Settings -> Secrets."
 
     try:
-        client = InferenceClient(model="Qwen/Qwen2.5-7B-Instruct", token=hf_token)
+        client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
         response = client.chat_completion(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=350,
