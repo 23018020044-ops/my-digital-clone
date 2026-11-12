@@ -125,10 +125,11 @@ QUESTION:
         return "⚠️ Error: HF_TOKEN secret is missing. Please add it in Streamlit App Settings -> Secrets."
 
     candidate_models = [
-        "Qwen/Qwen2.5-7B-Instruct:fastest",
-        "meta-llama/Llama-3.2-3B-Instruct:fastest",
-        "HuggingFaceTB/SmolLM3-3B:fastest",
-        "mistralai/Mistral-7B-Instruct-v0.3:fastest"
+        "Qwen/Qwen2.5-7B-Instruct:novita",
+        "Qwen/Qwen2.5-7B-Instruct:together",
+        "meta-llama/Llama-3.2-3B-Instruct:novita",
+        "meta-llama/Llama-3.1-8B-Instruct:novita",
+        "Qwen/Qwen2.5-72B-Instruct:fastest"
     ]
 
     last_error = ""
