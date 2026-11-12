@@ -21,6 +21,35 @@ TOP_K = 4
 
 st.set_page_config(page_title=f"{YOUR_NAME}'s Digital Clone", page_icon="🤖", layout="centered")
 
+# --- HELPER: TOPIC-STYLE PASSAGE PREVIEW (NON-VERBATIM & NEVER EMPTY) ---
+def clean_snippet(text, source=""):
+    cleaned = re.sub(r"[#*`_>-]+", " ", text)
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", cleaned)
+    words = cleaned.split()
+
+    stopwords = {
+        "the", "and", "for", "that", "this", "with", "from", "have", "are",
+        "was", "were", "been", "being", "into", "about", "what", "when",
+        "where", "which", "who", "whom", "whose", "why", "how", "all", "any",
+        "both", "each", "few", "more", "most", "other", "some", "such", "nor",
+        "not", "only", "own", "same", "than", "too", "very", "can", "will",
+        "just", "should", "now", "also", "like", "love", "enjoy", "prefer",
+        "work", "working", "thing", "things", "really", "often", "usually"
+    }
+
+    keywords = []
+    for w in words:
+        lw = w.lower()
+        if len(lw) > 3 and lw not in stopwords and lw not in [k.lower() for k in keywords]:
+            keywords.append(w.capitalize())
+        if len(keywords) == 5:
+            break
+
+    topic_name = source.replace(".md", "").replace(".txt", "").replace("_", " ").title()
+    if keywords:
+        return f"{topic_name} — Key themes: {', '.join(keywords)}..."
+    return f"Relevant notes extracted from {topic_name} section."
+
 # --- 1. LOAD & CHUNK ---
 def load_and_chunk(data_dir="data"):
     chunks = []
@@ -164,7 +193,7 @@ for msg in st.session_state.messages:
         if msg["role"] == "assistant" and "model" in msg:
             st.caption(f"⚡ Groq ({msg['model']})")
             with st.expander("🔍 Retrieved Knowledge Sources & Scores", expanded=False):
-                st.table(msg["sources_df"])
+                st.dataframe(msg["sources_df"], use_container_width=True, hide_index=True)
 
 if prompt_input := st.chat_input("Ask me anything about my projects, research, experience, skills, hobbies..."):
     st.session_state.messages.append({"role": "user", "content": prompt_input})
@@ -181,18 +210,17 @@ if prompt_input := st.chat_input("Ask me anything about my projects, research, e
 
         table_rows = []
         for rank, (chunk, score) in enumerate(retrieved, start=1):
-            snippet = chunk["text"][:65] + "..." if len(chunk["text"]) > 65 else chunk["text"]
             table_rows.append({
                 "Rank": f"#{rank}",
                 "Source File": chunk["source"],
                 "Chunk ID": chunk["chunk_id"],
                 "RRF Score": f"{score:.4f}",
-                "Passage Snippet": snippet
+                "Passage Snippet": clean_snippet(chunk["text"], chunk["source"])
             })
         sources_df = pd.DataFrame(table_rows)
 
         with st.expander("🔍 Retrieved Knowledge Sources & Scores", expanded=True):
-            st.table(sources_df)
+            st.dataframe(sources_df, use_container_width=True, hide_index=True)
 
     st.session_state.messages.append({
         "role": "assistant",
