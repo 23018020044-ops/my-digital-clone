@@ -115,7 +115,6 @@ CONTEXT:
 QUESTION:
 {question}"""
 
-    # Read HF_TOKEN from Streamlit secrets or environment variable
     hf_token = ""
     try:
         hf_token = st.secrets["HF_TOKEN"]
@@ -125,16 +124,28 @@ QUESTION:
     if not hf_token:
         return "⚠️ Error: HF_TOKEN secret is missing. Please add it in Streamlit App Settings -> Secrets."
 
-    try:
-        client = InferenceClient(model="meta-llama/Llama-3.2-3B-Instruct", token=hf_token)
-        response = client.chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=350,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"API Error: {str(e)}"
+    candidate_models = [
+        "Qwen/Qwen2.5-7B-Instruct:fastest",
+        "meta-llama/Llama-3.2-3B-Instruct:fastest",
+        "HuggingFaceTB/SmolLM3-3B:fastest",
+        "mistralai/Mistral-7B-Instruct-v0.3:fastest"
+    ]
+
+    last_error = ""
+    for model_id in candidate_models:
+        try:
+            client = InferenceClient(model=model_id, token=hf_token)
+            response = client.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=350,
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    return f"API Error: {last_error}"
 
 # --- 5. STREAMLIT UI ---
 st.title(f"🤖 Chat with {YOUR_NAME}'s Digital Clone")
