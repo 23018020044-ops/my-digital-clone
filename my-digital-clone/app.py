@@ -3,6 +3,8 @@ import glob
 import re
 import numpy as np
 import streamlit as st
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE_DIR)
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from huggingface_hub import InferenceClient
