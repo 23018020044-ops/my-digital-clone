@@ -89,7 +89,7 @@ def retrieve(query, mode="Hybrid", top_k=TOP_K):
 
     return results
 
-# --- 4. GENERATION (GROQ) ---
+# --- 4. GENERATION (GROQ AUTO-MODEL) ---
 def generate_answer(question, retrieved):
     context_blocks = []
     for c, _ in retrieved:
@@ -126,13 +126,28 @@ QUESTION:
 
     try:
         client = Groq(api_key=groq_api_key)
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=350,
-            temperature=0.3
-        )
-        return response.choices[0].message.content
+        # Automatically find an active chat model from your Groq account
+        available = [
+            m.id for m in client.models.list().data
+            if "whisper" not in m.id.lower() and "guard" not in m.id.lower() and "tts" not in m.id.lower()
+        ]
+        preferred = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b"]
+        models_to_try = [m for m in preferred if m in available] + [m for m in available if m not in preferred]
+
+        last_err = ""
+        for model_id in models_to_try:
+            try:
+                response = client.chat.completions.create(
+                    model=model_id,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=350,
+                    temperature=0.3
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                last_err = str(e)
+                continue
+        return f"API Error: {last_err}"
     except Exception as e:
         return f"API Error: {str(e)}"
 
