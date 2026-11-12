@@ -2,6 +2,7 @@ import os
 import glob
 import re
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +19,7 @@ CHUNK_SIZE = 250
 OVERLAP = 40
 TOP_K = 4
 
-st.set_page_config(page_title=f"{YOUR_NAME}'s Digital Clone", page_icon="🤖", layout="wide")
+st.set_page_config(page_title=f"{YOUR_NAME}'s Digital Clone", page_icon="🤖", layout="centered")
 
 # --- 1. LOAD & CHUNK ---
 def load_and_chunk(data_dir="data"):
@@ -39,7 +40,7 @@ def load_and_chunk(data_dir="data"):
                 continue
             chunks.append({
                 "source": filename,
-                "chunk_id": f"{filename}_chunk_{chunk_id}",
+                "chunk_id": f"#{chunk_id}",
                 "text": " ".join(chunk_words)
             })
             chunk_id += 1
@@ -89,15 +90,11 @@ def retrieve(query, mode="Hybrid", top_k=TOP_K):
 
     return results
 
-# --- 4. GENERATION (GROQ AUTO-MODEL) ---
+# --- 4. GENERATION (GROQ) ---
 def generate_answer(question, retrieved):
     context_blocks = []
     for c, _ in retrieved:
-        src = c["source"]
-        cid = c["chunk_id"]
-        txt = c["text"]
-        context_blocks.append(f"[{src} | {cid}]\n{txt}")
-
+        context_blocks.append(f"[{c['source']} | {c['chunk_id']}]\n{c['text']}")
     context_str = "\n\n".join(context_blocks)
 
     prompt = f"""You are the AI clone of {YOUR_NAME}, {YOUR_DESC}.
@@ -122,16 +119,15 @@ QUESTION:
         groq_api_key = os.environ.get("GROQ_API_KEY", "")
 
     if not groq_api_key:
-        return "⚠️ Error: GROQ_API_KEY secret is missing. Please add it in Streamlit App Settings -> Secrets."
+        return "⚠️ Error: GROQ_API_KEY secret is missing.", "None"
 
     try:
         client = Groq(api_key=groq_api_key)
-        # Automatically find an active chat model from your Groq account
         available = [
             m.id for m in client.models.list().data
             if "whisper" not in m.id.lower() and "guard" not in m.id.lower() and "tts" not in m.id.lower()
         ]
-        preferred = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b"]
+        preferred = ["openai/gpt-oss-20b", "llama-3.3-70b-versatile", "openai/gpt-oss-120b", "qwen/qwen3-32b"]
         models_to_try = [m for m in preferred if m in available] + [m for m in available if m not in preferred]
 
         last_err = ""
@@ -143,40 +139,64 @@ QUESTION:
                     max_tokens=350,
                     temperature=0.3
                 )
-                return response.choices[0].message.content
+                return response.choices[0].message.content, model_id
             except Exception as e:
                 last_err = str(e)
                 continue
-        return f"API Error: {last_err}"
+        return f"API Error: {last_err}", "None"
     except Exception as e:
-        return f"API Error: {str(e)}"
+        return f"API Error: {str(e)}", "None"
 
-# --- 5. STREAMLIT UI ---
-st.title(f"🤖 Chat with {YOUR_NAME}'s Digital Clone")
-st.warning("⚠️ **Disclaimer: This is an AI clone, not the real person.**")
+# --- 5. STREAMLIT CHAT UI ---
+st.title(f"🤖 {YOUR_NAME}'s Digital Clone")
+st.caption("⚠️ Disclaimer: This is an AI clone, not the real person.")
 
-col1, col2 = st.columns([1.2, 1])
+with st.sidebar:
+    st.header("⚙️ Retrieval Settings")
+    mode = st.radio("Retrieval Mode:", ["Hybrid", "BM25 only", "Dense only"])
 
-with col1:
-    question = st.text_area("Ask me anything about myself:", placeholder="e.g., What projects have you worked on?", height=100)
-    mode = st.radio("Select Retrieval Mode:", ["Hybrid", "BM25 only", "Dense only"], horizontal=True)
-    ask_btn = st.button("Ask Clone", type="primary")
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    if ask_btn:
-        if not question.strip():
-            st.error("Please enter a question first.")
-        else:
-            with st.spinner("Searching notes & thinking..."):
-                retrieved = retrieve(question, mode=mode, top_k=TOP_K)
-                answer = generate_answer(question, retrieved)
-            st.subheader("Clone's Answer")
-            st.info(answer)
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+        if msg["role"] == "assistant" and "model" in msg:
+            st.caption(f"⚡ Groq ({msg['model']})")
+            with st.expander("🔍 Retrieved Knowledge Sources & Scores", expanded=False):
+                st.table(msg["sources_df"])
 
-with col2:
-    st.subheader("📄 Retrieved Chunks (Sources & Scores)")
-    if ask_btn and question.strip():
-        for chunk, score in retrieved:
-            with st.expander(f"Source: {chunk['source']} | ID: {chunk['chunk_id']} | Score: {score:.4f}", expanded=True):
-                st.write(chunk["text"])
-    else:
-        st.caption("Ask a question to see the retrieved passages, sources, and scores here.")
+if prompt_input := st.chat_input("Ask me anything about my projects, research, experience, skills, hobbies..."):
+    st.session_state.messages.append({"role": "user", "content": prompt_input})
+    with st.chat_message("user"):
+        st.write(prompt_input)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            retrieved = retrieve(prompt_input, mode=mode, top_k=TOP_K)
+            answer, used_model = generate_answer(prompt_input, retrieved)
+
+        st.write(answer)
+        st.caption(f"⚡ Groq ({used_model})")
+
+        table_rows = []
+        for rank, (chunk, score) in enumerate(retrieved, start=1):
+            snippet = chunk["text"][:65] + "..." if len(chunk["text"]) > 65 else chunk["text"]
+            table_rows.append({
+                "Rank": f"#{rank}",
+                "Source File": chunk["source"],
+                "Chunk ID": chunk["chunk_id"],
+                "RRF Score": f"{score:.4f}",
+                "Passage Snippet": snippet
+            })
+        sources_df = pd.DataFrame(table_rows)
+
+        with st.expander("🔍 Retrieved Knowledge Sources & Scores", expanded=True):
+            st.table(sources_df)
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+        "model": used_model,
+        "sources_df": sources_df
+    })
