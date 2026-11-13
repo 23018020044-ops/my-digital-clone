@@ -1,9 +1,10 @@
 import streamlit as st
 import os
 import re
+import torch
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
-import numpy as np
 from groq import Groq
 
 # ==========================================
@@ -19,7 +20,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. CACHING MODELS & DATA (No IndexError)
+# 2. CACHING MODELS & DATA
 # ==========================================
 @st.cache_resource
 def load_embedding_model():
@@ -91,7 +92,6 @@ def retrieve(query, mode="Hybrid", top_k=3):
 
     # 2. Dense Search (Cosine Similarity)
     query_emb = embedding_model.encode(query, convert_to_tensor=True)
-    import torch
     cos_scores = torch.nn.functional.cosine_similarity(query_emb.unsqueeze(0), dense_embeddings)
     dense_scores = cos_scores.cpu().numpy()
     dense_ranks = np.argsort(dense_scores)[::-1]
@@ -123,93 +123,4 @@ def retrieve(query, mode="Hybrid", top_k=3):
 # 4. LLM GENERATION & GUARDRAILS
 # ==========================================
 def generate_response(query, context):
-    system_prompt = (
-        "You are Saher Nazir's AI Digital Clone. Answer questions accurately based ONLY on the provided context. "
-        "If the context does not contain the answer, say EXACTLY: 'I don't have that in my notes.' "
-        "Do not hallucinate, invent facts, or answer questions outside the scope of the context."
-    )
-    
-    user_prompt = f"Context:\n{context}\n\nQuestion: {query}"
-    
-    try:
-        response = client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.0
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error connecting to LLM: {str(e)}"
-
-# ==========================================
-# 5. STREAMLIT UI & CHAT INTERFACE
-# ==========================================
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ RAG Settings")
-    selected_mode = st.radio("Select Retrieval Mode:", ["Hybrid", "BM25 only", "Dense only"])
-    st.caption("Loaded Chunks: " + str(len(chunks_meta)))
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display previous chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant" and "sources" in message and message["sources"]:
-            st.caption("⚡ Groq (llama3-8b-8192)")
-            with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
-                st.table(message["sources"])
-
-# Input box
-prompt = st.chat_input("Ask me anything about my projects, research, experience, skills, hobbies...")
-
-if prompt:
-    # 1. Print User Message
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    # 2. Process Answer
-    with st.spinner("Thinking..."):
-        retrieved_items = retrieve(prompt, mode=selected_mode, top_k=3)
-        
-        # Build context for LLM
-        context_text = "\n\n".join([item[0]["text"] for item in retrieved_items])
-        
-        # Generate final answer
-        answer = generate_response(prompt, context_text)
-        
-        # Prepare neat table data
-        table_data = []
-        for i, (chunk_dict, score) in enumerate(retrieved_items):
-            # Clean snippet for table (first 10-15 words)
-            clean_text = re.sub(r'\s+', ' ', chunk_dict["text"]).strip()
-            snippet = " ".join(clean_text.split()[:15]) + "..."
-            
-            table_data.append({
-                "Rank": f"#{i+1}",
-                "Source File": chunk_dict["file"],
-                "Chunk ID": chunk_dict["chunk_id"],
-                "RRF Score": f"{score:.4f}",
-                "Passage Snippet": snippet
-            })
-
-    # 3. Print Assistant Message & Table
-    with st.chat_message("assistant"):
-        st.markdown(answer)
-        if table_data:
-            st.caption("⚡ Groq (llama3-8b-8192)")
-            with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
-                st.table(table_data)
-                
-    # 4. Save to history
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": answer,
-        "sources": table_data if table_data else []
-    })
+    system
