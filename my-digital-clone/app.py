@@ -132,7 +132,7 @@ def generate_response(query, context):
     
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b", # <-- Image wale model ka exact naam
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -166,7 +166,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message["role"] == "assistant" and "sources" in message and message["sources"]:
-            st.caption("⚡ Groq (llama-3.1-8b-instant)")
+            st.caption("⚡ Groq (openai/gpt-oss-20b)") # <-- UI mein show karne ke liye update kar diya hai
             with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
                 st.table(message["sources"])
 
@@ -201,7 +201,7 @@ if prompt:
     with st.chat_message("assistant"):
         st.markdown(answer)
         if table_data:
-            st.caption("⚡ Groq (llama-3.1-8b-instant)")
+            st.caption("⚡ Groq (openai/gpt-oss-20b)") # <-- Yahan bhi same name 
             with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
                 st.table(table_data)
                 
