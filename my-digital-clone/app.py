@@ -1,230 +1,215 @@
-import os
-import glob
-import re
-import numpy as np
-import pandas as pd
 import streamlit as st
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-os.chdir(BASE_DIR)
-
-from rank_bm25 import BM25Okapi
+import os
+import re
 from sentence_transformers import SentenceTransformer
+from rank_bm25 import BM25Okapi
+import numpy as np
 from groq import Groq
 
-# --- CONFIGURATION ---
-YOUR_NAME = "Saher Nazir"
-YOUR_DESC = "a CS student passionate about AI and software engineering"
-CHUNK_SIZE = 250
-OVERLAP = 40
-TOP_K = 4
+# ==========================================
+# 1. SETUP & CONFIGURATION
+# ==========================================
+st.set_page_config(page_title="Saher's Digital Clone", page_icon="🤖")
 
-st.set_page_config(page_title=f"{YOUR_NAME}'s Digital Clone", page_icon="🤖", layout="centered")
+# Groq API Key setup (from Streamlit Secrets)
+try:
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+except Exception as e:
+    st.error("Please add GROQ_API_KEY to your Streamlit Secrets.")
+    st.stop()
 
-# --- HELPER: TOPIC-STYLE PASSAGE PREVIEW (NON-VERBATIM & NEVER EMPTY) ---
-def clean_snippet(text, source=""):
-    cleaned = re.sub(r"[#*`_>-]+", " ", text)
-    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", cleaned)
-    words = cleaned.split()
-
-    stopwords = {
-        "the", "and", "for", "that", "this", "with", "from", "have", "are",
-        "was", "were", "been", "being", "into", "about", "what", "when",
-        "where", "which", "who", "whom", "whose", "why", "how", "all", "any",
-        "both", "each", "few", "more", "most", "other", "some", "such", "nor",
-        "not", "only", "own", "same", "than", "too", "very", "can", "will",
-        "just", "should", "now", "also", "like", "love", "enjoy", "prefer",
-        "work", "working", "thing", "things", "really", "often", "usually"
-    }
-
-    keywords = []
-    for w in words:
-        lw = w.lower()
-        if len(lw) > 3 and lw not in stopwords and lw not in [k.lower() for k in keywords]:
-            keywords.append(w.capitalize())
-        if len(keywords) == 5:
-            break
-
-    topic_name = source.replace(".md", "").replace(".txt", "").replace("_", " ").title()
-    if keywords:
-        return f"{topic_name} — Key themes: {', '.join(keywords)}..."
-    return f"Relevant notes extracted from {topic_name} section."
-
-# --- 1. LOAD & CHUNK ---
-def load_and_chunk(data_dir="data"):
-    chunks = []
-    files = sorted(glob.glob(os.path.join(data_dir, "*.*")))
-    for filepath in files:
-        if not filepath.endswith((".txt", ".md")):
-            continue
-        filename = os.path.basename(filepath)
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            words = f.read().split()
-        
-        step = CHUNK_SIZE - OVERLAP
-        chunk_id = 0
-        for i in range(0, len(words), step):
-            chunk_words = words[i:i + CHUNK_SIZE]
-            if len(chunk_words) < 20:
-                continue
-            chunks.append({
-                "source": filename,
-                "chunk_id": f"#{chunk_id}",
-                "text": " ".join(chunk_words)
-            })
-            chunk_id += 1
-    return chunks
-
-# --- 2. CACHE MODELS & INDEXES ---
+# ==========================================
+# 2. CACHING MODELS & DATA (No IndexError)
+# ==========================================
 @st.cache_resource
-def init_retriever():
-    chunks = load_and_chunk()
-    tokenized_corpus = [re.findall(r"\w+", c["text"].lower()) for c in chunks]
+def load_embedding_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+embedding_model = load_embedding_model()
+
+@st.cache_data
+def process_knowledge_base():
+    data_dir = "./data"
+    chunks_meta = []
+    
+    # Read files
+    if not os.path.exists(data_dir):
+        return [], None, []
+        
+    for filename in os.listdir(data_dir):
+        if filename.endswith(".md"):
+            filepath = os.path.join(data_dir, filename)
+            with open(filepath, "r", encoding="utf-8") as f:
+                text = f.read()
+                
+                # Simple Word-based Chunking (Size: 250, Overlap: 40)
+                words = text.split()
+                chunk_size = 250
+                overlap = 40
+                
+                chunk_id = 0
+                for i in range(0, len(words), chunk_size - overlap):
+                    chunk_words = words[i : i + chunk_size]
+                    if not chunk_words:
+                        break
+                    chunk_text = " ".join(chunk_words)
+                    
+                    # Store chunk with its metadata
+                    chunks_meta.append({
+                        "text": chunk_text,
+                        "file": filename,
+                        "chunk_id": f"#{chunk_id}"
+                    })
+                    chunk_id += 1
+
+    if not chunks_meta:
+        return [], None, []
+
+    # Prepare BM25
+    tokenized_corpus = [chunk["text"].lower().split() for chunk in chunks_meta]
     bm25 = BM25Okapi(tokenized_corpus)
-    embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-    doc_embeddings = np.load("embeddings.npy")
-    return chunks, bm25, embed_model, doc_embeddings
+    
+    # Prepare Dense Embeddings
+    corpus_texts = [chunk["text"] for chunk in chunks_meta]
+    dense_embeddings = embedding_model.encode(corpus_texts, convert_to_tensor=True)
+    
+    return chunks_meta, bm25, dense_embeddings
 
-chunks, bm25, embed_model, doc_embeddings = init_retriever()
+chunks_meta, bm25_model, dense_embeddings = process_knowledge_base()
 
-# --- 3. RETRIEVAL & HYBRID FUSION (RRF) ---
-def retrieve(query, mode="Hybrid", top_k=TOP_K):
-    tokens = re.findall(r"\w+", query.lower())
-    bm25_scores = bm25.get_scores(tokens)
-    bm25_ranked = np.argsort(bm25_scores)[::-1]
+# ==========================================
+# 3. HYBRID RAG & RETRIEVAL LOGIC
+# ==========================================
+def retrieve(query, mode="Hybrid", top_k=3):
+    if not chunks_meta:
+        return []
 
-    q_emb = embed_model.encode([query], normalize_embeddings=True)[0]
-    dense_scores = np.dot(doc_embeddings, q_emb)
-    dense_ranked = np.argsort(dense_scores)[::-1]
+    # 1. BM25 Search
+    tokenized_query = query.lower().split()
+    bm25_scores = bm25_model.get_scores(tokenized_query)
+    bm25_ranks = np.argsort(bm25_scores)[::-1]
 
+    # 2. Dense Search (Cosine Similarity)
+    query_emb = embedding_model.encode(query, convert_to_tensor=True)
+    import torch
+    cos_scores = torch.nn.functional.cosine_similarity(query_emb.unsqueeze(0), dense_embeddings)
+    dense_scores = cos_scores.cpu().numpy()
+    dense_ranks = np.argsort(dense_scores)[::-1]
+
+    # 3. Reciprocal Rank Fusion (RRF)
+    rrf_scores = {i: 0 for i in range(len(chunks_meta))}
+    k_rrf = 60
+
+    if mode in ["BM25 only", "Hybrid"]:
+        for rank, doc_idx in enumerate(bm25_ranks):
+            if bm25_scores[doc_idx] > 0:
+                rrf_scores[doc_idx] += 1 / (k_rrf + rank)
+
+    if mode in ["Dense only", "Hybrid"]:
+        for rank, doc_idx in enumerate(dense_ranks):
+            rrf_scores[doc_idx] += 1 / (k_rrf + rank)
+
+    # Sort and get Top K
+    sorted_indices = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)[:top_k]
+    
     results = []
-    if mode == "BM25 only":
-        for idx in bm25_ranked[:top_k]:
-            results.append((chunks[idx], float(bm25_scores[idx])))
-
-    elif mode == "Dense only":
-        for idx in dense_ranked[:top_k]:
-            results.append((chunks[idx], float(dense_scores[idx])))
-
-    else:  # Hybrid (Reciprocal Rank Fusion: 1 / (60 + rank))
-        rrf_scores = {}
-        for rank, idx in enumerate(bm25_ranked):
-            rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (60 + rank + 1)
-        for rank, idx in enumerate(dense_ranked):
-            rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (60 + rank + 1)
-
-        hybrid_sorted = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        for idx, score in hybrid_sorted:
-            results.append((chunks[idx], float(score)))
-
+    for idx in sorted_indices:
+        if rrf_scores[idx] > 0:
+            results.append((chunks_meta[idx], rrf_scores[idx]))
+            
     return results
 
-# --- 4. GENERATION (GROQ) ---
-def generate_answer(question, retrieved):
-    context_blocks = []
-    for c, _ in retrieved:
-        context_blocks.append(f"[{c['source']} | {c['chunk_id']}]\n{c['text']}")
-    context_str = "\n\n".join(context_blocks)
-
-    prompt = f"""You are the AI clone of {YOUR_NAME}, {YOUR_DESC}.
-Speak in the first person, in a friendly and natural tone.
-
-Rules:
-1. Answer ONLY using the CONTEXT below. It comes from my own documents.
-2. If the context does not contain the answer, say: "I don't have that in my notes." Do not guess or invent facts about me.
-3. Never share phone numbers, addresses, ID numbers or other private details.
-4. If asked whether you are the real person, say you are an AI clone of {YOUR_NAME}.
-
-CONTEXT:
-{context_str}
-
-QUESTION:
-{question}"""
-
-    groq_api_key = ""
+# ==========================================
+# 4. LLM GENERATION & GUARDRAILS
+# ==========================================
+def generate_response(query, context):
+    system_prompt = (
+        "You are Saher Nazir's AI Digital Clone. Answer questions accurately based ONLY on the provided context. "
+        "If the context does not contain the answer, say EXACTLY: 'I don't have that in my notes.' "
+        "Do not hallucinate, invent facts, or answer questions outside the scope of the context."
+    )
+    
+    user_prompt = f"Context:\n{context}\n\nQuestion: {query}"
+    
     try:
-        groq_api_key = st.secrets["GROQ_API_KEY"]
-    except Exception:
-        groq_api_key = os.environ.get("GROQ_API_KEY", "")
-
-    if not groq_api_key:
-        return "⚠️ Error: GROQ_API_KEY secret is missing.", "None"
-
-    try:
-        client = Groq(api_key=groq_api_key)
-        available = [
-            m.id for m in client.models.list().data
-            if "whisper" not in m.id.lower() and "guard" not in m.id.lower() and "tts" not in m.id.lower()
-        ]
-        preferred = ["openai/gpt-oss-20b", "llama-3.3-70b-versatile", "openai/gpt-oss-120b", "qwen/qwen3-32b"]
-        models_to_try = [m for m in preferred if m in available] + [m for m in available if m not in preferred]
-
-        last_err = ""
-        for model_id in models_to_try:
-            try:
-                response = client.chat.completions.create(
-                    model=model_id,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=350,
-                    temperature=0.3
-                )
-                return response.choices[0].message.content, model_id
-            except Exception as e:
-                last_err = str(e)
-                continue
-        return f"API Error: {last_err}", "None"
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        return f"API Error: {str(e)}", "None"
+        return f"Error connecting to LLM: {str(e)}"
 
-# --- 5. STREAMLIT CHAT UI ---
-st.title(f"🤖 {YOUR_NAME}'s Digital Clone")
-st.caption("⚠️ Disclaimer: This is an AI clone, not the real person.")
-
+# ==========================================
+# 5. STREAMLIT UI & CHAT INTERFACE
+# ==========================================
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ Retrieval Settings")
-    mode = st.radio("Retrieval Mode:", ["Hybrid", "BM25 only", "Dense only"])
+    st.header("⚙️ RAG Settings")
+    selected_mode = st.radio("Select Retrieval Mode:", ["Hybrid", "BM25 only", "Dense only"])
+    st.caption("Loaded Chunks: " + str(len(chunks_meta)))
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
-        if msg["role"] == "assistant" and "model" in msg:
-            st.caption(f"⚡ Groq ({msg['model']})")
-            with st.expander("🔍 Retrieved Knowledge Sources & Scores", expanded=False):
-                st.dataframe(msg["sources_df"], use_container_width=True, hide_index=True)
+# Display previous chat history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message["role"] == "assistant" and "sources" in message and message["sources"]:
+            st.caption("⚡ Groq (llama3-8b-8192)")
+            with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
+                st.table(message["sources"])
 
-if prompt_input := st.chat_input("Ask me anything about my projects, research, experience, skills, hobbies..."):
-    st.session_state.messages.append({"role": "user", "content": prompt_input})
+# Input box
+prompt = st.chat_input("Ask me anything about my projects, research, experience, skills, hobbies...")
+
+if prompt:
+    # 1. Print User Message
     with st.chat_message("user"):
-        st.write(prompt_input)
-
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            retrieved = retrieve(prompt_input, mode=mode, top_k=TOP_K)
-            answer, used_model = generate_answer(prompt_input, retrieved)
-
-        st.write(answer)
-        st.caption(f"⚡ Groq ({used_model})")
-
-        table_rows = []
-        for rank, (chunk, score) in enumerate(retrieved, start=1):
-            table_rows.append({
-                "Rank": f"#{rank}",
-                "Source File": chunk["source"],
-                "Chunk ID": chunk["chunk_id"],
+        st.markdown(prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # 2. Process Answer
+    with st.spinner("Thinking..."):
+        retrieved_items = retrieve(prompt, mode=selected_mode, top_k=3)
+        
+        # Build context for LLM
+        context_text = "\n\n".join([item[0]["text"] for item in retrieved_items])
+        
+        # Generate final answer
+        answer = generate_response(prompt, context_text)
+        
+        # Prepare neat table data
+        table_data = []
+        for i, (chunk_dict, score) in enumerate(retrieved_items):
+            # Clean snippet for table (first 10-15 words)
+            clean_text = re.sub(r'\s+', ' ', chunk_dict["text"]).strip()
+            snippet = " ".join(clean_text.split()[:15]) + "..."
+            
+            table_data.append({
+                "Rank": f"#{i+1}",
+                "Source File": chunk_dict["file"],
+                "Chunk ID": chunk_dict["chunk_id"],
                 "RRF Score": f"{score:.4f}",
-                "Passage Snippet": clean_snippet(chunk["text"], chunk["source"])
+                "Passage Snippet": snippet
             })
-        sources_df = pd.DataFrame(table_rows)
 
-        with st.expander("🔍 Retrieved Knowledge Sources & Scores", expanded=True):
-            st.dataframe(sources_df, use_container_width=True, hide_index=True)
-
+    # 3. Print Assistant Message & Table
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+        if table_data:
+            st.caption("⚡ Groq (llama3-8b-8192)")
+            with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
+                st.table(table_data)
+                
+    # 4. Save to history
     st.session_state.messages.append({
         "role": "assistant",
         "content": answer,
-        "model": used_model,
-        "sources_df": sources_df
+        "sources": table_data if table_data else []
     })
