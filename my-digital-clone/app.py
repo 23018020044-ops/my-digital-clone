@@ -16,7 +16,7 @@ st.set_page_config(page_title="Saher's Digital Clone", page_icon="🤖")
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except Exception as e:
-    st.error("Please add GROQ_API_KEY to your Streamlit Secrets.")
+    st.error("⚠️ Please add GROQ_API_KEY to your Streamlit Secrets.")
     st.stop()
 
 # ==========================================
@@ -30,10 +30,11 @@ embedding_model = load_embedding_model()
 
 @st.cache_data
 def process_knowledge_base():
-    data_dir = "./data"
+    # Bulletproof dynamic path for cloud deployment
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, "data")
     chunks_meta = []
     
-    # Read files
     if not os.path.exists(data_dir):
         return [], None, []
         
@@ -55,7 +56,6 @@ def process_knowledge_base():
                         break
                     chunk_text = " ".join(chunk_words)
                     
-                    # Store chunk with its metadata
                     chunks_meta.append({
                         "text": chunk_text,
                         "file": filename,
@@ -85,18 +85,18 @@ def retrieve(query, mode="Hybrid", top_k=3):
     if not chunks_meta:
         return []
 
-    # 1. BM25 Search
+    # BM25 Search
     tokenized_query = query.lower().split()
     bm25_scores = bm25_model.get_scores(tokenized_query)
     bm25_ranks = np.argsort(bm25_scores)[::-1]
 
-    # 2. Dense Search (Cosine Similarity)
+    # Dense Search
     query_emb = embedding_model.encode(query, convert_to_tensor=True)
     cos_scores = torch.nn.functional.cosine_similarity(query_emb.unsqueeze(0), dense_embeddings)
     dense_scores = cos_scores.cpu().numpy()
     dense_ranks = np.argsort(dense_scores)[::-1]
 
-    # 3. Reciprocal Rank Fusion (RRF)
+    # Reciprocal Rank Fusion
     rrf_scores = {i: 0 for i in range(len(chunks_meta))}
     k_rrf = 60
 
@@ -109,7 +109,6 @@ def retrieve(query, mode="Hybrid", top_k=3):
         for rank, doc_idx in enumerate(dense_ranks):
             rrf_scores[doc_idx] += 1 / (k_rrf + rank)
 
-    # Sort and get Top K
     sorted_indices = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)[:top_k]
     
     results = []
@@ -123,4 +122,91 @@ def retrieve(query, mode="Hybrid", top_k=3):
 # 4. LLM GENERATION & GUARDRAILS
 # ==========================================
 def generate_response(query, context):
-    system
+    system_prompt = (
+        "You are Saher Nazir's AI Digital Clone. Answer questions accurately based ONLY on the provided context. "
+        "If the context does not contain the answer, say EXACTLY: 'I don't have that in my notes.' "
+        "Do not hallucinate, invent facts, or answer questions outside the scope of the context."
+    )
+    
+    user_prompt = f"Context:\n{context}\n\nQuestion: {query}"
+    
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error connecting to LLM: {str(e)}"
+
+# ==========================================
+# 5. STREAMLIT UI & CHAT INTERFACE
+# ==========================================
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ RAG Settings")
+    selected_mode = st.radio("Select Retrieval Mode:", ["Hybrid", "BM25 only", "Dense only"])
+    if not chunks_meta:
+        st.error("⚠️ Data folder not found or empty.")
+    else:
+        st.caption("Loaded Chunks: " + str(len(chunks_meta)))
+
+# Add Welcome Message to prevent blank screen
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "👋 Hi! I am Saher Nazir's AI Digital Clone. Ask me anything about my projects, research, experience, skills, or hobbies!"}
+    ]
+
+# Display chat history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if message["role"] == "assistant" and "sources" in message and message["sources"]:
+            st.caption("⚡ Groq (llama-3.1-8b-instant)")
+            with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
+                st.table(message["sources"])
+
+# Input box
+prompt = st.chat_input("Ask me anything...")
+
+if prompt:
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    with st.spinner("Thinking..."):
+        retrieved_items = retrieve(prompt, mode=selected_mode, top_k=3)
+        context_text = "\n\n".join([item[0]["text"] for item in retrieved_items])
+        
+        answer = generate_response(prompt, context_text)
+        
+        table_data = []
+        for i, (chunk_dict, score) in enumerate(retrieved_items):
+            raw_text = chunk_dict["text"].replace("#", "").replace("*", "").replace("`", "").replace("-", "")
+            clean_text = re.sub(r'\s+', ' ', raw_text).strip()
+            snippet = " ".join(clean_text.split()[:15]) + "..."
+            
+            table_data.append({
+                "Rank": f"#{i+1}",
+                "Source File": chunk_dict["file"],
+                "Chunk ID": chunk_dict["chunk_id"],
+                "RRF Score": f"{score:.4f}",
+                "Passage Snippet": snippet
+            })
+
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+        if table_data:
+            st.caption("⚡ Groq (llama-3.1-8b-instant)")
+            with st.expander("🔍 Retrieved Knowledge Sources & Scores"):
+                st.table(table_data)
+                
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+        "sources": table_data if table_data else []
+    })
